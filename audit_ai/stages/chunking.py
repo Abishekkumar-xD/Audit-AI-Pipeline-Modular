@@ -242,4 +242,38 @@ class AudioChunkingTask(PipelineTask):
     
     async def _execute(self) -> List[str]:
         """
-        Execute audio 
+        Execute audio chunking.
+        
+        Returns:
+            List of chunk file paths
+            
+        Raises:
+            FileNotFoundError: If audio file not found
+            RuntimeError: If chunking fails
+        """
+        # Check that audio path is set
+        if not hasattr(self.config, 'audio_path') or not self.config.audio_path:
+            raise ValueError("Audio path not set in configuration")
+        
+        audio_path = self.config.audio_path
+        
+        # Log start
+        logger.info(f"Starting audio chunking: {audio_path}")
+        self.update_progress(0.1)
+        
+        # Create output directory
+        os.makedirs(self.config.temp_dir, exist_ok=True)
+        
+        # Execute chunking strategy
+        chunk_paths = await self.resource_manager.with_cpu(
+            self.strategy.chunk_audio,
+            audio_path,
+            self.config.temp_dir,
+            self.config
+        )
+        
+        # Log results
+        logger.info(f"Audio chunking completed: {len(chunk_paths)} chunks created")
+        self.update_progress(1.0)
+        
+        return chunk_paths
