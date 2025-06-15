@@ -1,0 +1,315 @@
+# Audit-AI Pipeline: Comprehensive Usage Guide
+
+## 1. Introduction
+
+The Audit-AI Pipeline is an enterprise-grade framework designed for automated auditing of long-form sales calls (e.g., Zoom, Google Meet, Microsoft Teams). It leverages state-of-the-art speech and language models to convert raw recordings into structured, speaker-attributed transcripts and then performs GPT-based analysis to extract compliance insights and coaching opportunities. The pipeline is built for performance, featuring parallel processing, Voice Activity Detection (VAD), and efficient model management.
+
+## 2. Installation and Setup
+
+### Prerequisites
+*   Python 3.8 or higher
+*   `pip` and `venv` (recommended for virtual environments)
+*   FFmpeg installed and available in your system's PATH (for audio extraction)
+*   Git (for cloning the repository, if applicable)
+
+### Steps
+
+1.  **Clone the Repository (if you haven't set it up manually)**:
+    If you are starting from a Git repository:
+    ```bash
+    git clone https://github.com/Abishekkumar-xD/Audit-ai-pipeline.git
+    cd Audit-ai-pipeline
+    ```
+    If you've set up the files manually as per previous instructions, navigate to your project root directory (e.g., `Audit-AI-Pipeline-Modular`).
+
+2.  **Create and Activate a Virtual Environment (Recommended)**:
+    ```bash
+    python -m venv .venv
+    ```
+    Activate the environment:
+    *   On macOS and Linux:
+        ```bash
+        source .venv/bin/activate
+        ```
+    *   On Windows:
+        ```bash
+        .venv\Scripts\activate
+        ```
+
+3.  **Install Dependencies**:
+    Ensure you have a `requirements.txt` file in your project root with all necessary packages.
+    ```bash
+    pip install -r requirements.txt
+    ```
+    This command will install all the Python libraries required by the pipeline, including PyTorch, PyAnnote, WhisperX, OpenAI, and others.
+
+## 3. Environment Variables
+
+The pipeline requires certain API keys and tokens to be set as environment variables for full functionality:
+
+1.  **Hugging Face Token (Required for Speaker Diarization)**:
+    The `pyannote/speaker-diarization-3.1` model, used for speaker diarization, requires authentication with a Hugging Face token.
+    ```bash
+    export HUGGINGFACE_TOKEN="your_huggingface_user_access_token"
+    ```
+    Replace `"your_huggingface_user_access_token"` with your actual token from Hugging Face. You can find or create this token in your Hugging Face account settings.
+
+2.  **OpenAI API Key (Required for GPT-based Audit)**:
+    If you plan to use the audit stage, which relies on GPT models, you need an OpenAI API key.
+    ```bash
+    export OPENAI_API_KEY="your_openai_api_key"
+    ```
+    Replace `"your_openai_api_key"` with your actual key from OpenAI.
+
+**Note**: You can set these variables in your shell session, or for a more permanent solution, add them to your shell's configuration file (e.g., `.bashrc`, `.zshrc`, or use a `.env` file with a library like `python-dotenv` if you modify the code to load it).
+
+## 4. Basic Usage Commands
+
+The Audit-AI Pipeline can be executed primarily through its command-line interface (CLI) or by calling its main functions programmatically.
+
+### Using the CLI (`audit_ai.cli`)
+
+This is the recommended way for most users to interact with the pipeline.
+
+*   **Process a single video file**:
+    ```bash
+    python -m audit_ai.cli process path/to/your/video.mp4 --output-dir path/to/output_results/
+    ```
+
+*   **Process multiple video files in a directory (batch mode)**:
+    ```bash
+    python -m audit_ai.cli batch path/to/your/videos_directory/ --output-dir path/to/batch_output_results/
+    ```
+
+### Using the Main Module (`audit_ai.main`)
+
+This provides a simpler interface, especially if you are embedding the pipeline into other Python scripts.
+
+*   **Process a single video file**:
+    ```bash
+    python -m audit_ai.main path/to/your/video.mp4 --output-dir path/to/output_results/
+    ```
+    (Note: The `audit_ai.main` script can also handle multiple input files passed as arguments directly for batch processing.)
+
+## 5. Command-Line Interface (CLI) - `audit_ai.cli`
+
+The `audit_ai.cli` module provides a structured way to interact with the pipeline. The main commands are `process`, `batch`, `status`, and `report`.
+
+### `process` Command
+Processes a single audio/video file.
+
+**Syntax**:
+```bash
+python -m audit_ai.cli process <input_file> [--output-dir <dir>] [OPTIONS]
+```
+
+**Example**:
+```bash
+python -m audit_ai.cli process sales_call_Q1.mp4 --output-dir ./audit_outputs --chunk-size 1200 --enable-vad --max-gpu-jobs 1
+```
+
+### `batch` Command
+Processes multiple audio/video files from a specified directory.
+
+**Syntax**:
+```bash
+python -m audit_ai.cli batch <input_dir> [--output-dir <dir>] [--pattern "*.mp4"] [--max-concurrent <num>] [OPTIONS]
+```
+
+**Example**:
+```bash
+python -m audit_ai.cli batch ./recorded_calls/ --output-dir ./batch_audit_outputs/ --pattern "*.mkv" --max-concurrent 2 --chunk-size 1800
+```
+
+### `status` Command
+Checks the status of a previously run pipeline job using its job ID.
+
+**Syntax**:
+```bash
+python -m audit_ai.cli status <job_id> [--progress-file <path/to/progress.json>]
+```
+The `job_id` is typically part of the `pipeline_progress_JOB_ID.json` filename.
+
+**Example**:
+```bash
+python -m audit_ai.cli status 20250615_103045
+```
+
+### `report` Command
+Generates a human-readable report from the results of a completed pipeline job.
+
+**Syntax**:
+```bash
+python -m audit_ai.cli report <job_id> [--output <report_file_path>] [--format <html|json|text>] [--include-transcripts]
+```
+
+**Example**:
+```bash
+python -m audit_ai.cli report 20250615_103045 --output call_audit_report.html --format html --include-transcripts
+```
+
+## 6. Parameter Explanations
+
+Many parameters are common across the `process` and `batch` commands.
+
+*   **Input/Output**:
+    *   `input_file` (for `process`): Path to the single input video/audio file.
+    *   `input_dir` (for `batch`): Directory containing input video/audio files.
+    *   `output_dir`: Directory where all output files (audio, diarization, transcript, audit, progress logs) will be saved. Defaults to `output/`.
+    *   `--pattern` (for `batch`): Glob pattern to match files within `input_dir` (e.g., `*.mp4`, `*.wav`). Defaults to `*.mp4`.
+    *   `--json-output` (for `process` and `batch`): Path to save a consolidated JSON summary of the processing results.
+
+*   **Processing Control**:
+    *   `--chunk-size <seconds>`: Duration of audio chunks in seconds for parallel processing. Smaller chunks allow more parallelism but might affect context for diarization/transcription. Recommended: 600-3600 (10-60 minutes). Defaults to `3600`.
+    *   `--enable-vad`: If set, enables Voice Activity Detection to create chunks based on speech segments, skipping silence. This can significantly speed up processing for calls with long silent periods.
+    *   `--vad-threshold <0.0-1.0>`: Sensitivity for VAD. Higher values are more strict. Defaults to `0.5`.
+    *   `--no-overlap-stages`: Disables overlapping execution of pipeline stages (e.g., transcription starting before all diarization chunks are done). Not recommended for performance.
+
+*   **Resource Management**:
+    *   `--max-workers <num>`: Maximum number of CPU worker processes to use for CPU-bound tasks. Defaults to `CPU count - 1`.
+    *   `--max-gpu-jobs <num>`: Maximum number of tasks to run concurrently on the GPU. This is crucial for managing GPU memory. Defaults to `1`.
+    *   `--no-gpu`: Forces the pipeline to run entirely on CPU, even if a GPU is available.
+    *   `--gpu-memory-fraction <0.0-1.0>`: Fraction of GPU memory to allow PyTorch to use. Defaults to `0.7`.
+    *   `--mixed-precision`: Enables mixed-precision (FP16) computation on compatible GPUs for potential speedup and reduced memory usage.
+
+*   **Model Configuration**:
+    *   `--min-speakers <num>`: Minimum number of speakers expected for diarization. Defaults to `2`.
+    *   `--max-speakers <num>`: Maximum number of speakers expected for diarization. Defaults to `6`.
+    *   `--transcription-model <name>`: Name of the Whisper model to use for transcription (e.g., `tiny`, `base`, `small`, `medium`, `large-v3`, `faster-large-v2`). Defaults to `large-v3`.
+    *   `--no-model-cache`: Disables caching of loaded models. If not set, models (diarization, transcription) are loaded once and reused, saving time and memory.
+
+*   **Batch Processing**:
+    *   `--max-concurrent <num>` (for `batch`): Maximum number of files to process concurrently in batch mode. Defaults to `1`.
+
+*   **Logging & Debugging**:
+    *   `--verbose`: Enables more detailed (DEBUG level) logging output.
+    *   `--log-level <LEVEL>`: Set logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL). Defaults to `INFO`.
+    *   `--log-file <path>`: Path to the log file. Defaults to `audit_ai_pipeline.log` or `audit_ai_cli.log`.
+    *   `--quiet`: Suppress console output (logs will still go to file).
+
+*   **Error Handling**:
+    *   `--max-retries <num>`: Max retry attempts for a failed task. Defaults to `2`.
+    *   `--retry-delay <seconds>`: Delay between retries. Defaults to `5`.
+    *   `--fail-fast`: If set, the entire pipeline stops on the first task failure.
+
+*   **Configuration Files**:
+    *   `--config <path/to/config.yaml>`: Load pipeline configuration from a YAML or JSON file.
+    *   `--save-config <path/to/config.yaml>`: Save the current effective configuration (including CLI overrides) to a file.
+
+## 7. Examples for Different Scenarios
+
+1.  **Process a single file with default settings (1-hour chunks, 1 GPU job)**:
+    ```bash
+    python -m audit_ai.cli process meeting_recording.mp4 --output-dir ./single_call_output
+    ```
+
+2.  **Process a single file with 20-minute chunks, VAD enabled, and allowing 2 concurrent GPU tasks**:
+    This is a good setting for faster processing on a machine with a decent GPU (e.g., >= 8GB VRAM).
+    ```bash
+    python -m audit_ai.cli process long_sales_pitch.mkv --output-dir ./optimized_output \
+        --chunk-size 1200 \
+        --enable-vad \
+        --max-gpu-jobs 2 \
+        --transcription-model large-v3 \
+        --verbose
+    ```
+
+3.  **Batch process all `.wav` files in a directory, 3 files concurrently**:
+    ```bash
+    python -m audit_ai.cli batch ./all_calls_wav/ --output-dir ./batch_results/ \
+        --pattern "*.wav" \
+        --max-concurrent 3 \
+        --chunk-size 1800 \
+        --enable-vad
+    ```
+
+4.  **Force CPU processing for a file (e.g., if GPU is busy or causing issues)**:
+    ```bash
+    python -m audit_ai.cli process sensitive_call.mp4 --output-dir ./cpu_only_output --no-gpu
+    ```
+
+5.  **Check the status of job `20250615_142030`**:
+    ```bash
+    python -m audit_ai.cli status 20250615_142030
+    ```
+    (This assumes a `pipeline_progress_20250615_142030.json` file exists in `./output/` or the current directory).
+
+6.  **Generate an HTML report for job `20250615_142030`, including full transcripts**:
+    ```bash
+    python -m audit_ai.cli report 20250615_142030 --output detailed_report.html --format html --include-transcripts
+    ```
+
+7.  **Save current configuration to a file for reuse**:
+    ```bash
+    python -m audit_ai.cli process call.mp4 --output-dir temp_run --save-config my_pipeline_config.yaml
+    ```
+    Then, use it later:
+    ```bash
+    python -m audit_ai.cli process another_call.mp4 --config my_pipeline_config.yaml
+    ```
+
+## 8. Tips for Optimal Performance
+
+*   **GPU is Key**: For significant speed, a CUDA-enabled NVIDIA GPU (>= 8GB VRAM recommended for `large-v3` model) is highly beneficial.
+*   **Chunk Size**:
+    *   Smaller chunks (e.g., 10-20 minutes / 600-1200 seconds) increase parallelism but can slightly reduce diarization/transcription context quality at boundaries.
+    *   Larger chunks (e.g., 30-60 minutes / 1800-3600 seconds) preserve context better but offer less parallelism.
+    *   Experiment to find the best balance for your hardware and call types. 20-30 minutes is often a good starting point.
+*   **VAD (`--enable-vad`)**: Use VAD if your calls have significant periods of silence. It can drastically reduce the amount of audio processed.
+*   **`--max-gpu-jobs`**: Set this according to your GPU's VRAM. For `large-v3` Whisper, each job can take 6-8GB. If you have 16GB VRAM, you might try `2`. Monitor GPU memory usage.
+*   **Model Caching**: Enabled by default. This significantly speeds up processing for subsequent chunks/files by loading models only once. Only disable (`--no-model-cache`) for specific debugging scenarios.
+*   **Transcription Model**:
+    *   `large-v3` provides the highest accuracy but is the slowest.
+    *   Smaller models (`medium`, `small`, `base`, `tiny`) are faster but less accurate.
+    *   `faster-large-v2` (if using `faster-whisper` integration, not explicitly detailed but a common optimization) can offer speedups with comparable accuracy to `large-v2`.
+*   **Hardware**:
+    *   Fast SSDs for I/O.
+    *   Sufficient RAM (32GB+ recommended for multiple large files or very long single files).
+
+## 9. Output File Structure and Reporting
+
+For each input file processed (e.g., `input_video.mp4`), the pipeline typically generates the following files in the specified `output_dir` (or a subdirectory named after the input file in batch mode):
+
+*   `input_video_audio.wav`: The extracted audio track in WAV format.
+*   `input_video_diarization.json`: Speaker diarization results, containing segments with speaker labels and timestamps.
+    ```json
+    {
+      "audio_path": "path/to/input_video_audio.wav",
+      "segments": [
+        {"start": 0.52, "end": 5.67, "speaker": "SPEAKER_00", "confidence": 1.0, "duration": 5.15},
+        {"start": 6.01, "end": 10.23, "speaker": "SPEAKER_01", "confidence": 1.0, "duration": 4.22}
+      ],
+      "total_duration": 120.50,
+      "total_speakers": 2,
+      // ...
+    }
+    ```
+*   `input_video_transcript_with_speakers.json`: The full transcription, with text, timestamps, and speaker attribution for each segment. May also include word-level timestamps.
+    ```json
+    {
+      "segments": [
+        {"start": 0.52, "end": 3.10, "text": "Hello, thank you for calling.", "speaker": "SPEAKER_00", "words": [...]},
+        {"start": 3.50, "end": 5.67, "text": "How can I help you today?", "speaker": "SPEAKER_00", "words": [...]},
+        {"start": 6.01, "end": 10.23, "text": "Hi, I'm interested in your new product.", "speaker": "SPEAKER_01", "words": [...]}
+      ],
+      "language": "en",
+      // ...
+    }
+    ```
+*   `input_video_transcript_readable.txt`: A human-friendly plain text version of the transcript.
+*   `input_video_audit.json`: Results from the GPT-based audit stage (if run). Contains analysis, compliance checks, etc.
+    ```json
+    {
+      "transcript_path": "path/to/input_video_transcript_with_speakers.json",
+      "audit_timestamp": "2025-06-15T10:45:00.123Z",
+      "model_used": "gpt-4-turbo",
+      "audit_text": "Executive Summary:\n...", // Detailed audit text
+      // ...
+    }
+    ```
+*   `pipeline_progress_JOB_ID.json`: A JSON file logging the progress and status of each task within the pipeline for that specific job. `JOB_ID` is typically a timestamp.
+
+### Reporting
+The `audit_ai.cli report` command can be used to generate consolidated reports from these output files, typically in HTML, JSON, or plain text format, providing a summary of the audit findings.
+
+This guide should provide a solid foundation for using and understanding the Audit-AI Pipeline. If you have specific scenarios or further questions, feel free to ask!
