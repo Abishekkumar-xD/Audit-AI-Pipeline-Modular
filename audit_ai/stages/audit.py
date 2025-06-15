@@ -1,393 +1,327 @@
-#!/usr/bin/env python3
-"""
-GPT-based audit stage for the Audit-AI Pipeline.
+# audit_ai/stages/audit.py
 
-This module provides task implementations for auditing transcripts
-using GPT-based language models and prompts.
-
-Classes:
-    AuditStrategy: Base class for audit strategies
-    GPTAuditStrategy: Strategy for GPT-based auditing
-    AuditTask: Task for performing audits on transcripts
-    
-Usage:
-    from audit_ai.stages.audit import AuditTask
-    
-    # Create and add to pipeline
-    audit_task = AuditTask(
-        config=config,
-        progress_tracker=pipeline.progress,
-        resource_manager=pipeline.resource_manager,
-        dependencies=["transcription_job_id"]
-    )
-    pipeline.add_task(audit_task)
-"""
-
-import os
 import json
+import os
+import logging
 import time
 import asyncio
-import logging
-from abc import ABC, abstractmethod
+from typing import Dict, List, Any, Optional
 from pathlib import Path
-from datetime import datetime
-from typing import List, Dict, Any, Optional, Union
+import openai
 
-from audit_ai.core.task import PipelineTask
+from ..core.task import PipelineTask
 
-# Set up logger
 logger = logging.getLogger(__name__)
 
-# OpenAI conditional import
-try:
-    import openai
-    OPENAI_AVAILABLE = True
-except ImportError:
-    OPENAI_AVAILABLE = False
-    logger.warning("OpenAI not available, GPT audit functionality will be limited")
-
-
-class AuditStrategy(ABC):
-    """Base class for audit strategies."""
+class AuditTask(PipelineTask):
+    """Task to perform GPT-based audit on complete transcripts."""
     
-    @abstractmethod
-    async def audit_transcript(
-        self, transcript_path: str, config: Any
-    ) -> Dict[str, Any]:
-        """
-        Audit a transcript.
-        
-        Args:
-            transcript_path: Path to transcript JSON file
-            config: Pipeline configuration
-            
-        Returns:
-            Audit results dictionary
-        """
-        pass
-
-
-class GPTAuditStrategy(AuditStrategy):
-    """GPT-based transcript auditing strategy."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(task_id="audit", task_type="audit", *args, **kwargs)
+        self.max_retries = 3
+        self.retry_delay = 5  # seconds
     
-    # Constants
-    DEFAULT_MODEL = "gpt-4-turbo"
-    DEFAULT_TEMP = 0.2
-    DEFAULT_MAX_TOKENS = 2000
-    
-    # Default prompt templates
-    DEFAULT_SYSTEM_PROMPT = """You are an expert sales call auditor. Your task is to analyze a sales call transcript and identify:
-
-1. Key discussion points and topics
-2. Potential compliance issues or areas of concern
-3. Sales techniques used and their effectiveness
-4. Customer objections and how they were addressed
-5. Follow-up items and next steps
-
-Provide a structured, objective analysis focusing on factual observations from the transcript.
-"""
-
-    DEFAULT_USER_PROMPT = """Please audit the following sales call transcript. The transcript includes speaker attribution where each speaker is identified.
-
-{transcript}
-
-Provide your detailed analysis organized into the following sections:
-1. Executive Summary
-2. Compliance Assessment
-3. Key Discussion Points
-4. Customer Sentiment Analysis
-5. Sales Technique Evaluation
-6. Follow-up Recommendations
-
-Focus on objective analysis backed by specific quotes or moments from the call.
-"""
-
-    async def audit_transcript(
-        self, transcript_path: str, config: Any
-    ) -> Dict[str, Any]:
-        """
-        Audit a transcript using GPT.
+    async def _execute(self) -> str:
+        """Execute the audit task on the transcript."""
+        self.update_progress(0.1)
         
-        Args:
-            transcript_path: Path to transcript JSON file
-            config: Pipeline configuration
-            
-        Returns:
-            Audit results dictionary
-            
-        Raises:
-            ValueError: If transcript file not found
-            RuntimeError: If OpenAI API is not available or audit fails
-        """
-        if not OPENAI_AVAILABLE:
-            raise RuntimeError("OpenAI library is required for GPT auditing")
-        
-        # Check OpenAI API key
-        api_key = os.getenv("OPENAI_API_KEY")
+        # Ensure OpenAI API key is set
+        api_key = os.environ.get("OPENAI_API_KEY")
         if not api_key:
-            raise ValueError("OPENAI_API_KEY environment variable not set")
+            raise ValueError("OPENAI_API_KEY environment variable must be set")
+        
+        self.client = openai.AsyncOpenAI(api_key=api_key)
         
         # Load transcript
-        transcript_data = self._load_transcript(transcript_path)
+        transcript_path = self.config.transcript_json_path
+        logger.info(f"Loading transcript from {transcript_path}")
+        with open(transcript_path, 'r') as f:
+            transcript_data = json.load(f)
         
-        # Extract readable transcript
-        readable_transcript = self._format_transcript(transcript_data)
-        
-        # Get audit parameters
-        model = self.DEFAULT_MODEL
-        temperature = self.DEFAULT_TEMP
-        max_tokens = self.DEFAULT_MAX_TOKENS
-        
-        # Get prompts
-        system_prompt = self.DEFAULT_SYSTEM_PROMPT
-        user_prompt = self.DEFAULT_USER_PROMPT.format(transcript=readable_transcript)
-        
-        # Truncate if needed
-        if len(user_prompt) > 90000:  # Assuming 90K tokens max for context window
-            logger.warning(f"Truncating transcript, original length: {len(user_prompt)} chars")
-            user_prompt = user_prompt[:90000] + "\n\n[Transcript truncated due to length]"
-        
-        # Log audit start
-        logger.info(f"Starting GPT audit with model: {model}")
-        start_time = time.time()
-        
-        try:
-            # Configure OpenAI client
-            client = openai.OpenAI(api_key=api_key)
-            
-            # Call OpenAI API
-            response = await asyncio.to_thread(
-                client.chat.completions.create,
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=temperature,
-                max_tokens=max_tokens
-            )
-            
-            # Process response
-            audit_text = response.choices[0].message.content
-            
-            # Calculate stats
-            processing_time = time.time() - start_time
-            transcript_segments = transcript_data.get("segments", [])
-            
-            # Create audit result
-            audit_result = {
-                "transcript_path": transcript_path,
-                "audit_timestamp": datetime.now().isoformat(),
-                "model_used": model,
-                "audit_text": audit_text,
-                "processing_time": processing_time,
-                "audit_summary": "GPT audit completed successfully",
-                "audit_details": {
-                    "total_segments": len(transcript_segments),
-                    "total_duration": transcript_data.get("segments", [])[-1]["end"] if transcript_segments else 0,
-                    "speakers": list(set(s.get("speaker", "UNKNOWN") for s in transcript_segments))
-                }
-            }
-            
-            logger.info(f"Audit completed in {processing_time:.2f}s")
-            return audit_result
-            
-        except Exception as e:
-            logger.error(f"GPT audit failed: {e}")
-            raise RuntimeError(f"GPT audit failed: {e}")
-    
-    def _load_transcript(self, transcript_path: str) -> Dict[str, Any]:
-        """
-        Load transcript from JSON file.
-        
-        Args:
-            transcript_path: Path to transcript JSON file
-            
-        Returns:
-            Transcript data dictionary
-            
-        Raises:
-            FileNotFoundError: If transcript file not found
-            ValueError: If transcript format is invalid
-        """
-        try:
-            with open(transcript_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            
-            # Validate transcript
-            if "segments" not in data or not data["segments"]:
-                raise ValueError("Invalid transcript format: 'segments' missing or empty")
-            
-            return data
-        
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse transcript JSON: {e}")
-            raise ValueError(f"Invalid transcript JSON: {e}")
-        
-        except Exception as e:
-            logger.error(f"Failed to load transcript: {e}")
-            raise
-    
-    def _format_transcript(self, transcript_data: Dict[str, Any]) -> str:
-        """
-        Format transcript data as readable text.
-        
-        Args:
-            transcript_data: Transcript data dictionary
-            
-        Returns:
-            Readable transcript text
-        """
+        # Parse segments for processing
         segments = transcript_data.get("segments", [])
         if not segments:
-            return "Empty transcript"
+            raise ValueError("No transcript segments found in the JSON")
         
-        # Format segments
-        formatted_text = "=== TRANSCRIPT ===\n\n"
+        # Load audit criteria
+        audit_criteria = self.config.get("audit_criteria", self._get_default_audit_criteria())
+        
+        # Process the entire transcript
+        self.update_progress(0.2)
+        audit_results = await self._process_transcript(segments, audit_criteria)
+        
+        # Save results
+        self.update_progress(0.9)
+        output_path = os.path.join(
+            self.config.output_dir,
+            f"{Path(self.config.input_path).stem}_audit_results.json"
+        )
+        
+        with open(output_path, 'w') as f:
+            json.dump(audit_results, f, indent=2)
+        
+        # Create a human-readable version
+        readable_path = os.path.join(
+            self.config.output_dir,
+            f"{Path(self.config.input_path).stem}_audit_readable.md"
+        )
+        
+        self._generate_readable_report(audit_results, readable_path)
+        
+        self.update_progress(1.0)
+        return output_path
+    
+    async def _process_transcript(self, segments: List[Dict], audit_criteria: Dict) -> Dict:
+        """Process the full transcript and perform GPT audit."""
+        # Convert segments to formatted transcript
+        formatted_transcript = self._format_transcript_for_audit(segments)
+        
+        # Create prompt with audit criteria
+        prompt = self._create_audit_prompt(formatted_transcript, audit_criteria)
+        
+        # Call GPT API with retries
+        for attempt in range(self.max_retries):
+            try:
+                logger.info(f"Calling GPT API for audit (attempt {attempt+1}/{self.max_retries})")
+                
+                response = await self.client.chat.completions.create(
+                    model=self.config.get("gpt_model", "gpt-4-turbo"),
+                    messages=[
+                        {"role": "system", "content": "You are an expert sales call auditor with deep experience in sales techniques, compliance, and conversation analysis."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.1,  # Low temperature for more consistent, analytical responses
+                    response_format={"type": "json_object"},
+                    max_tokens=4000
+                )
+                
+                # Parse JSON response
+                audit_json = json.loads(response.choices[0].message.content)
+                
+                # Add metadata
+                result = {
+                    "transcript_path": self.config.transcript_json_path,
+                    "audit_timestamp": time.time(),
+                    "audit_criteria": audit_criteria,
+                    "model_used": self.config.get("gpt_model", "gpt-4-turbo"),
+                    "audit_results": audit_json
+                }
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Error during GPT audit: {e}")
+                if attempt < self.max_retries - 1:
+                    logger.info(f"Retrying in {self.retry_delay} seconds...")
+                    await asyncio.sleep(self.retry_delay)
+                    self.retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error("Max retries exceeded")
+                    raise
+    
+    def _format_transcript_for_audit(self, segments: List[Dict]) -> str:
+        """Format transcript segments into a clean format for GPT audit."""
+        formatted_lines = []
         current_speaker = None
         
         for segment in segments:
-            start_time = segment.get("start", 0)
-            end_time = segment.get("end", 0)
-            text = segment.get("text", "").strip()
             speaker = segment.get("speaker", "UNKNOWN")
+            text = segment.get("text", "").strip()
+            start = segment.get("start", 0)
             
             # Format timestamp
-            start_min = int(start_time // 60)
-            start_sec = int(start_time % 60)
-            timestamp = f"[{start_min:02d}:{start_sec:02d}]"
+            minutes = int(start // 60)
+            seconds = int(start % 60)
+            timestamp = f"[{minutes:02d}:{seconds:02d}]"
             
-            # Only show speaker change
+            # Only show speaker when it changes
             if speaker != current_speaker:
-                formatted_text += f"\n{speaker}:\n"
+                formatted_lines.append(f"\n{speaker}:")
                 current_speaker = speaker
             
-            formatted_text += f"{timestamp} {text}\n"
+            formatted_lines.append(f"{timestamp} {text}")
         
-        formatted_text += "\n=== END OF TRANSCRIPT ===\n"
-        return formatted_text
-
-
-class AuditTask(PipelineTask):
-    """
-    Task for performing audits on transcripts.
+        return "\n".join(formatted_lines)
     
-    This task analyzes a transcript using GPT or other language models
-    to provide insights, compliance checks, and recommendations.
+    def _create_audit_prompt(self, formatted_transcript: str, audit_criteria: Dict) -> str:
+        """Create the audit prompt with transcript and criteria."""
+        # Construct structured prompt with audit criteria
+        prompt_parts = [
+            "# SALES CALL AUDIT TASK",
+            
+            "## TRANSCRIPT",
+            formatted_transcript,
+            
+            "## AUDIT CRITERIA",
+        ]
+        
+        # Add each audit criterion
+        for category, details in audit_criteria.items():
+            prompt_parts.append(f"### {category}")
+            if isinstance(details, dict):
+                for key, desc in details.items():
+                    prompt_parts.append(f"- {key}: {desc}")
+            elif isinstance(details, list):
+                for item in details:
+                    prompt_parts.append(f"- {item}")
+            else:
+                prompt_parts.append(f"- {details}")
+        
+        # Add output format instructions
+        prompt_parts.extend([
+            "## INSTRUCTIONS",
+            "1. Carefully analyze the transcript according to the audit criteria above.",
+            "2. Provide specific examples from the transcript to support your findings.",
+            "3. Include timestamp references where relevant.",
+            "4. Rate each criterion on a scale of 1-5 where applicable.",
+            "5. Provide actionable recommendations for improvement.",
+            
+            "## REQUIRED OUTPUT FORMAT",
+            "Respond with a JSON object with the following structure:",
+            "```json",
+            "{",
+            '  "summary": "Overall assessment summary in 2-3 sentences",',
+            '  "overall_score": 0.0,  // Overall score from 0-100',
+            '  "categories": {',
+            '    "category_name": {',
+            '      "score": 0,  // Score from 1-5',
+            '      "strengths": ["strength 1", "strength 2"],',
+            '      "weaknesses": ["weakness 1", "weakness 2"],',
+            '      "examples": ["[timestamp] Example text from transcript"],',
+            '      "recommendations": ["recommendation 1", "recommendation 2"]',
+            '    },',
+            '    // Additional categories...',
+            '  },',
+            '  "key_moments": [',
+            '    {"timestamp": "[MM:SS]", "description": "Description of key moment", "impact": "positive/negative"}',
+            '  ],',
+            '  "compliance_issues": [  // Only if compliance issues found',
+            '    {"timestamp": "[MM:SS]", "issue": "Description of compliance issue"}',
+            '  ]',
+            "}",
+            "```",
+        ])
+        
+        return "\n\n".join(prompt_parts)
     
-    Attributes:
-        task_id: Unique identifier for the task
-        task_type: Type of task
-        config: Pipeline configuration
-        progress_tracker: Progress tracking system
-        resource_manager: Resource management system
-        dependencies: List of dependency task IDs
-        strategy: Audit strategy to use
-    """
+    def _get_default_audit_criteria(self) -> Dict:
+        """Provide default audit criteria if none specified in config."""
+        return {
+            "Opening": {
+                "Greeting": "Appropriate greeting and introduction",
+                "Rapport": "Building initial rapport",
+                "Purpose": "Clear statement of call purpose"
+            },
+            "Discovery": {
+                "Needs_Assessment": "Effective questions to understand customer needs",
+                "Listening": "Active listening and acknowledgment",
+                "Follow_Up": "Appropriate follow-up questions"
+            },
+            "Presentation": {
+                "Solution_Alignment": "Aligning solution to specific needs",
+                "Value_Proposition": "Clear articulation of value proposition",
+                "Differentiation": "Highlighting competitive differentiation"
+            },
+            "Objection_Handling": {
+                "Recognition": "Properly acknowledging objections",
+                "Addressing": "Effectively addressing concerns",
+                "Confirmation": "Confirming resolution"
+            },
+            "Closing": {
+                "Trial_Close": "Appropriate trial closes",
+                "Call_to_Action": "Clear next steps or call to action",
+                "Summary": "Effective summary of agreements"
+            },
+            "Communication": {
+                "Clarity": "Clear and concise communication",
+                "Tone": "Appropriate tone and pace",
+                "Empathy": "Demonstrated empathy and understanding"
+            },
+            "Compliance": {
+                "Required_Disclosures": "All required disclosures provided",
+                "Prohibited_Claims": "No prohibited claims or statements",
+                "Data_Protection": "Proper handling of sensitive information"
+            }
+        }
     
-    def __init__(
-        self,
-        config,
-        progress_tracker=None,
-        resource_manager=None,
-        dependencies=None
-    ):
-        """Initialize audit task."""
-        super().__init__(
-            task_id=f"audit_{config.job_id}",
-            task_type="audit",
-            config=config,
-            progress_tracker=progress_tracker,
-            resource_manager=resource_manager,
-            dependencies=dependencies or []
-        )
+    def _generate_readable_report(self, audit_results: Dict, output_path: str) -> None:
+        """Generate a human-readable markdown report from audit results."""
+        report_lines = [
+            "# Sales Call Audit Report",
+            f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+            "",
+            "## Summary",
+            audit_results.get("audit_results", {}).get("summary", "No summary available"),
+            "",
+            f"**Overall Score:** {audit_results.get('audit_results', {}).get('overall_score', 'N/A')}/100",
+            "",
+            "## Category Assessments",
+            ""
+        ]
         
-        # Select audit strategy
-        self.strategy = GPTAuditStrategy()
-    
-    async def _execute(self) -> str:
-        """
-        Execute transcript audit.
-        
-        Returns:
-            Path to audit output JSON file
+        # Add each category
+        categories = audit_results.get("audit_results", {}).get("categories", {})
+        for category_name, category_data in categories.items():
+            report_lines.extend([
+                f"### {category_name}",
+                f"**Score:** {category_data.get('score', 'N/A')}/5",
+                "",
+                "**Strengths:**",
+            ])
             
-        Raises:
-            ValueError: If transcript path not set
-            RuntimeError: If audit fails
-        """
-        # Check that transcript path is set
-        if not hasattr(self.config, 'transcript_json_path') or not self.config.transcript_json_path:
-            raise ValueError("Transcript JSON path not set in configuration")
-        
-        transcript_path = self.config.transcript_json_path
-        
-        # Log start
-        logger.info(f"Starting audit for transcript: {transcript_path}")
-        self.update_progress(0.1)
-        
-        # Check if we should skip audit
-        if not os.path.exists(transcript_path):
-            raise FileNotFoundError(f"Transcript file not found: {transcript_path}")
-        
-        # Perform audit with CPU resources (API call is network-bound)
-        result = await self.resource_manager.with_cpu(
-            self.strategy.audit_transcript,
-            transcript_path,
-            self.config
-        )
-        
-        self.update_progress(0.8)
-        
-        # Save audit results
-        input_file = Path(self.config.input_path)
-        audit_filename = f"{input_file.stem}_audit.json"
-        output_path = os.path.join(self.config.output_dir, audit_filename)
-        
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(result, f, indent=2, ensure_ascii=False)
-        
-        # Save readable audit report
-        self._save_readable_audit(result, output_path)
-        
-        # Store path in config
-        self.config.audit_output_path = output_path
-        
-        # Log completion
-        logger.info(f"Audit completed and saved to: {output_path}")
-        self.update_progress(1.0)
-        
-        return output_path
-    
-    def _save_readable_audit(self, result: Dict[str, Any], json_path: str) -> str:
-        """
-        Save audit results as readable text file.
-        
-        Args:
-            result: Audit result dictionary
-            json_path: Path to audit JSON file
+            for strength in category_data.get("strengths", []):
+                report_lines.append(f"- {strength}")
             
-        Returns:
-            Path to readable audit file
-        """
-        try:
-            output_path = Path(json_path).with_suffix('.txt')
+            report_lines.append("")
+            report_lines.append("**Areas for Improvement:**")
             
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write("=== SALES CALL AUDIT REPORT ===\n\n")
-                f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Transcript: {os.path.basename(result['transcript_path'])}\n")
-                f.write(f"Model: {result['model_used']}\n\n")
-                
-                # Write audit text
-                f.write(result['audit_text'])
-                
-                f.write("\n\n=== END OF AUDIT REPORT ===\n")
+            for weakness in category_data.get("weaknesses", []):
+                report_lines.append(f"- {weakness}")
             
-            logger.info(f"Readable audit report saved to: {output_path}")
-            return str(output_path)
+            report_lines.append("")
+            report_lines.append("**Examples from Call:**")
             
-        except Exception as e:
-            logger.warning(f"Failed to save readable audit: {e}")
-            return ""
+            for example in category_data.get("examples", []):
+                report_lines.append(f"- {example}")
+            
+            report_lines.append("")
+            report_lines.append("**Recommendations:**")
+            
+            for rec in category_data.get("recommendations", []):
+                report_lines.append(f"- {rec}")
+            
+            report_lines.append("")
+        
+        # Add key moments section
+        key_moments = audit_results.get("audit_results", {}).get("key_moments", [])
+        if key_moments:
+            report_lines.extend([
+                "## Key Moments",
+                ""
+            ])
+            
+            for moment in key_moments:
+                report_lines.extend([
+                    f"- **{moment.get('timestamp', '')}** - {moment.get('description', '')}",
+                    f"  Impact: {moment.get('impact', 'unknown')}",
+                    ""
+                ])
+        
+        # Add compliance issues section
+        compliance_issues = audit_results.get("audit_results", {}).get("compliance_issues", [])
+        if compliance_issues:
+            report_lines.extend([
+                "## Compliance Issues",
+                "⚠️ The following compliance issues were identified:",
+                ""
+            ])
+            
+            for issue in compliance_issues:
+                report_lines.extend([
+                    f"- **{issue.get('timestamp', '')}** - {issue.get('issue', '')}",
+                    ""
+                ])
+        
+        # Write to file
+        with open(output_path, 'w') as f:
+            f.write("\n".join(report_lines))
